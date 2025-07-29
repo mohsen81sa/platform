@@ -1,0 +1,7 @@
+
+<h1>Campaign List</h1>
+<ul>
+  {% for campaign in campaigns %}
+    <li><a href="{% url 'campaign_detail' campaign.pk %}">{{ campaign.title }}</a></li>
+  {% endfor %}
+</ul>
