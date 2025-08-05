@@ -14,7 +14,7 @@ from pathlib import Path
 import os
 from datetime import timedelta
 from dotenv import load_dotenv
-
+from celery.schedules import crontab
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'django_celery_beat',
     'accounts',
+    'drf_yasg',
 ]
 
 MIDDLEWARE = [
@@ -124,15 +125,25 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-
-# --- Celery Settings ---
-CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+AUTH_USER_MODEL = 'accounts.User'
+# --- Celery Configuration ---
+# Redis is our broker and backend
+CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = TIME_ZONE # مطمئن شوید با TIME_ZONE جنگو یکی است
+CELERY_TIMEZONE = 'Asia/Tehran' # یا منطقه زمانی خودتان.
+CELERY_ENABLE_UTC = False
 
+CELERY_BEAT_SCHEDULE = {
+    'schedule-campaign-posts-hourly': {
+        'task': 'accounts.tasks.schedule_campaign_posts',
+        'schedule': timedelta(hours=1),
+        'args': (), # اگر تسک شما نیاز به آرگومان ورودی دارد
+    },
+}
+    # اگر وظیفه دیگری دارید، آن را اینجا اضافه کنید
 # --- Google Gemini API Key ---
 GOOGLE_API_KEY = 'AIzaSyAVbHjceDyXJ5fDS7AkuCu_AdtCdDHKxIw'
 if not GOOGLE_API_KEY:
