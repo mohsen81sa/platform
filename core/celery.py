@@ -1,20 +1,48 @@
-# your_project_name/celery.py
-from __future__ import absolute_import, unicode_literals
-from celery.schedules import crontab
 import os
 from celery import Celery
-from django.conf import settings
+from celery.schedules import crontab
 
-# set the default Django settings module for the 'celery' program.
+# مسیر تنظیمات Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
 
 app = Celery('core')
 
-# Using a string here means the worker doesn't have to serialize
-# the configuration object to child processes.
-# - namespace='CELERY' means all celery-related configuration keys
-#   should have a `CELERY_` prefix.
+# لود تنظیمات با پیشوند CELERY_
 app.config_from_object('django.conf:settings', namespace='CELERY')
 
-# Load task modules from all registered Django app configs.
+# شناسایی خودکار تسک‌ها
 app.autodiscover_tasks()
+
+# زمان‌بندی تسک‌ها
+app.conf.beat_schedule = {
+    # بررسی کمپین‌ها و ساخت پست‌ها هر روز ساعت 8 صبح
+    'check_and_generate_due_posts_daily': {
+        'task': 'accounts.tasks.check_and_generate_due_posts',
+        'schedule': crontab(hour=8, minute=0),
+    },
+    # پاک کردن کمپین‌های منقضی هر روز ساعت 1 بامداد
+    'cleanup_expired_campaigns_daily': {
+        'task': 'accounts.tasks.cleanup_expired_campaigns',
+        'schedule': crontab(hour=1, minute=0),
+    },
+    # ارسال ایمیل یادآوری هر 6 ساعت
+    'send_campaign_reminder_emails': {
+        'task': 'accounts.tasks.send_campaign_reminder_emails',
+        'schedule': crontab(minute=0, hour='*/6'),
+    },
+    # پاک‌سازی Assetهای بدون استفاده هر هفته یک‌بار
+    'cleanup_unused_assets_weekly': {
+        'task': 'accounts.tasks.cleanup_unused_assets',
+        'schedule': crontab(hour=3, minute=0, day_of_week='sunday'),
+    },
+    # آپدیت وضعیت کمپین‌ها هر نیمه‌شب
+    'update_campaign_status_midnight': {
+        'task': 'accounts.tasks.update_campaign_status',
+        'schedule': crontab(hour=0, minute=0),
+    },
+    # چک سلامت سیستم هر ساعت
+    'health_check_hourly': {
+        'task': 'accounts.tasks.health_check_task',
+        'schedule': crontab(minute=0, hour='*'),
+    },
+}

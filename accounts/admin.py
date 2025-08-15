@@ -54,55 +54,26 @@ class PostAssetInline(admin.TabularInline):
     extra = 1
     raw_id_fields = ('asset',)
 
+class CampaignScheduleInline(admin.TabularInline):
+    model = CampaignSchedule
+    extra = 1
+    fields = ('crontab_schedule','start_date', 'is_enabled', 'last_run_at', 'next_run_at')
+    readonly_fields = ('last_run_at', 'next_run_at')
+
 
 @admin.register(Campaign)
 class CampaignAdmin(admin.ModelAdmin):
-    # فیلدهایی که در لیست کمپین‌ها نمایش داده می‌شوند
-    list_display = ('title', 'user', 'platform', 'status', 'start_date', 'is_active')
-    
-    # فیلدهایی که برای فیلتر کردن در سمت راست استفاده می‌شوند
-    list_filter = ('status', 'platform', 'is_active', 'start_date')
-    
-    # فیلدهایی که برای جستجو در بالای صفحه استفاده می‌شوند
-    search_fields = ('title', 'description', 'user__username', 'prompt')
-    
-    # نوار پیمایش تاریخی برای فیلد start_date
-    date_hierarchy = 'start_date'
-    
-    # نحوه مرتب‌سازی پیش‌فرض
-    ordering = ('-start_date',)
-    
-    # استفاده از فیلترهای افقی برای ManyToManyField
-    filter_horizontal = ('tags',)
-    
-    # نمایش فیلدها به صورت گروه‌بندی شده
-    fieldsets = (
-        (None, {
-            'fields': ('title', 'description', 'user', 'prompt', 'tags')
-        }),
-        ('زمان‌بندی و وضعیت', {
-            'fields': ('start_date', 'end_date', 'execution_period', 'status', 'is_active')
-        }),
-        ('منابع کمپین', {
-            'fields': ('platform', 'asset_library')
-        }),
-    )
-    
-    # نمایش فیلدهای ForeignKey به صورت یک فیلد متنی با ID برای کارایی بهتر
-    # این به خصوص برای زمانی که تعداد زیادی کاربر یا پلتفرم دارید مفید است
-    raw_id_fields = ('user', 'platform', 'asset_library')
-    
+    list_display = ('id', 'title', 'user', 'status', 'start_date', 'end_date', 'is_active')
+    list_filter = ('status', 'platform', 'is_active')
+    search_fields = ('title', 'prompt')
+    inlines = [CampaignScheduleInline]
+
+
 @admin.register(CampaignSchedule)
-class AdminCampaignSchedule(admin.ModelAdmin):
-    list_display = ('campaign_title', 'crontab_schedule', 'is_enabled', 'last_run_at', 'next_run_at')
-    search_fields = ('campaign__title',)
-    list_filter = ('is_enabled',)
-    readonly_fields = ('last_run_at', 'next_run_at')
+class CampaignScheduleAdmin(admin.ModelAdmin):
+    list_display = ('id', 'campaign','is_enabled', 'last_run_at', 'next_run_at')
 
-    def campaign_title(self, obj):
-        return obj.campaign.title
-    campaign_title.short_description = 'Campaign'
-
+    
 @admin.register(CampaignPost)
 class CampaignPostAdmin(admin.ModelAdmin):
     list_display = ('campaign', 'publish_date',)
@@ -111,9 +82,23 @@ class CampaignPostAdmin(admin.ModelAdmin):
     date_hierarchy = 'publish_date'
     inlines = [PostAssetInline,]
 
+    def save_formset(self, request, form, formset, change):
+        # Get the parent object before the formset is saved
+        campaign_post = form.instance
+        
+        # Save the parent object if it's new
+        if not campaign_post.pk:
+            campaign_post.save()
+        
+        # Now, save the formset with the saved parent object
+        super().save_formset(request, form, formset, change)    
+
 
 @admin.register(PostLog)
 class PostLogAdmin(admin.ModelAdmin):
     list_display = ('post', 'status',)
     list_filter = ('status',)
     search_fields = ('post__campaign__title', 'status', 'error_message',)
+    
+    
+

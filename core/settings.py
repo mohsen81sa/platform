@@ -136,20 +136,31 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'Asia/Tehran' # یا منطقه زمانی خودتان.
 CELERY_ENABLE_UTC = False
 
-CELERY_BEAT_SCHEDULE = {
-    'schedule-campaign-posts-hourly': {
-        'task': 'accounts.tasks.schedule_campaign_posts',
-        'schedule': timedelta(hours=1),
-        'args': (), # اگر تسک شما نیاز به آرگومان ورودی دارد
-    },
-}
     # اگر وظیفه دیگری دارید، آن را اینجا اضافه کنید
-# --- Google Gemini API Key ---
-GOOGLE_API_KEY = 'AIzaSyAVbHjceDyXJ5fDS7AkuCu_AdtCdDHKxIw'
-if not GOOGLE_API_KEY:
-    raise Exception("GOOGLE_API_KEY environment variable not set!")
+# --- OpenRouter API Key ---
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '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')
+if not OPENROUTER_API_KEY:
+    raise Exception("OPENROUTER_API_KEY environment variable not set!")
 
 # --- CORS (برای ارتباط با اکستنشن فرانت‌اِند) ---
 # اگر اکستنشن در دامنه دیگری اجرا می‌شود
 CORS_ALLOW_ALL_ORIGINS = True # در Production این را به لیست دامنه‌های مجاز محدود کنید
 CORS_ALLOW_CREDENTIALS = True
+
+# --- Email Configuration ---
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # For development
+# For production, use SMTP:
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# EMAIL_HOST = 'smtp.gmail.com'
+# EMAIL_PORT = 587
+# EMAIL_USE_TLS = True
+# EMAIL_HOST_USER = 'your-email@gmail.com'
+# EMAIL_HOST_PASSWORD = 'your-app-password'
+
+DEFAULT_FROM_EMAIL = 'noreply@yourdomain.com'
+
+# --- CORS (برای ارتباط با اکستنشن فرانت‌اِند) ---
+# اگر اکستنشن در دامنه دیگری اجرا می‌شود
+CORS_ALLOW_ALL_ORIGINS = True # در Production این را به لیست دامنه‌های مجاز محدود کنید
+CORS_ALLOW_CREDENTIALS = True
+

@@ -1,6 +1,7 @@
 from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django_celery_beat.models import CrontabSchedule
 
 
 from django.contrib.auth.models import AbstractUser
@@ -80,67 +81,65 @@ class Asset(models.Model):
     file = models.FileField(upload_to='assets/')
     created_at = models.DateTimeField(auto_now_add=True)
     tags = models.ManyToManyField(Tag, blank=True)
+    # Usage tracking fields
+    is_used_by_ai = models.BooleanField(default=False, help_text="Whether this asset has been used by AI for content generation")
+    used_at = models.DateTimeField(null=True, blank=True, help_text="When this asset was last used by AI")
+    usage_count = models.PositiveIntegerField(default=0, help_text="Number of times this asset has been used by AI")
 
     def __str__(self):
         return self.name
 
 
 class Campaign(models.Model):
-    STATUS_CHOICES = (
-        ('pending', 'در انتظار'),
-        ('active', 'فعال'),
-        ('completed', 'تکمیل شده'),
-        ('paused', 'متوقف شده'),
+    SESSION_TYPES = (
+        ('single', 'Single Session'),
+        ('multiple', 'Multiple Sessions'),
     )
-    description = models.TextField()
+
+    STATUS_CHOICES = (
+        ('pending', 'Pending'),
+        ('active', 'Active'),
+        ('completed', 'Completed'),
+        ('paused', 'Paused'),
+    )
+
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     title = models.CharField(max_length=200)
-    # فیلدهای جدید برای زمان‌بندی
     start_date = models.DateTimeField()
     end_date = models.DateTimeField()
+    execution_period = models.IntegerField(default=7, help_text="Number of days for each execution period")
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='pending')
-    
-
-    platform = models.ForeignKey(Platform, on_delete=models.CASCADE, related_name='campaigns')
-    execution_period = models.CharField(max_length=100, help_text="مثل: '*/5 * * * *' برای Celery Beat")
-    asset_library = models.ForeignKey(AssetLibrary, on_delete=models.CASCADE, related_name='campaigns')
-    tags = models.ManyToManyField(Tag, blank=True)
+    session_type = models.CharField(max_length=20, choices=SESSION_TYPES, default='single')
+    times_per_week = models.IntegerField(null=True, blank=True)
+    platform = models.ForeignKey('Platform', on_delete=models.CASCADE, related_name='campaigns')
+    asset_library = models.ForeignKey('AssetLibrary', on_delete=models.CASCADE, related_name='campaigns')
+    tags = models.ManyToManyField('Tag', blank=True)
     prompt = models.TextField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
 
     def __str__(self):
         return self.title
 
+
 class CampaignSchedule(models.Model):
     campaign = models.ForeignKey(
         Campaign,
         on_delete=models.CASCADE,
-        related_name='schedule',
+        related_name='schedules',
         verbose_name="Campaign"
     )
-    # الگوی Celery Beat Crontab برای زمان‌بندی
-    crontab_schedule = models.CharField(
-        max_length=100,
-        help_text="Format: 'minute hour day_of_week month day_of_month' (e.g., '*/15 * * * *' for every 15 minutes)",
-        verbose_name="Crontab Schedule"
+    crontab = models.ForeignKey(
+        CrontabSchedule,
+        null=True, blank=True,
+        on_delete=models.SET_NULL
     )
-    # تاریخ و زمان آخرین اجرای موفق
-    last_run_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        verbose_name="Last Run At"
-    )
-    # تاریخ و زمان اجرای بعدی
-    next_run_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        verbose_name="Next Run At"
-    )
-    # فعال یا غیرفعال بودن زمان‌بندی
-    is_enabled = models.BooleanField(
-        default=True,
-        verbose_name="Is Enabled"
-    )
+    last_run_at = models.DateTimeField(null=True, blank=True, verbose_name="Last Run At")
+    next_run_at = models.DateTimeField(null=True, blank=True, verbose_name="Next Run At")
+    
+        # فیلدهای جدید برای نگهداری تاریخ شروع و پایان
+    start_date = models.DateTimeField(null=True, blank=True)
+    end_date = models.DateTimeField(null=True, blank=True)
+    is_enabled = models.BooleanField(default=True, verbose_name="Is Enabled")
 
     def __str__(self):
         return f"Schedule for {self.campaign.title}"
@@ -148,16 +147,36 @@ class CampaignSchedule(models.Model):
     class Meta:
         verbose_name = "Campaign Schedule"
         verbose_name_plural = "Campaign Schedules"
-
+        
+        
 class CampaignPost(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        PUBLISHED = "PUBLISHED", "Published"
+        DRAFT = "DRAFT", "Draft"
+    
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='posts')
     content = models.TextField()
     publish_date = models.DateTimeField()
+    status = models.CharField(
+        max_length=20, 
+        choices=Status.choices, 
+        default=Status.PENDING,
+        help_text="Status of the post"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     assets = models.ManyToManyField(Asset, through='PostAsset')
 
-    def __str__(self):
-        return f"Post for {self.campaign.title} at {self.publish_date}"
+    class Meta:
+        ordering = ['-created_at']
+        
 
+
+    def __str__(self):
+        return f"Post for {self.campaign.title} at {self.publish_date} - {self.status}"
 
 class PostAsset(models.Model):
     post = models.ForeignKey(CampaignPost, on_delete=models.CASCADE)
@@ -167,10 +186,10 @@ class PostAsset(models.Model):
         unique_together = ('post', 'asset')
 
     def clean(self):
-        # گرفتن کمپین مربوط به این پست
+        # Getting the campaign related to this post
         campaign = self.post.campaign
 
-        # چک کردن اینکه این asset قبلاً در پست‌های دیگه از همین کمپین استفاده شده یا نه
+        # Checking if this asset has already been used in other posts of the same campaign
         used = PostAsset.objects.filter(
             post__campaign=campaign,
             asset=self.asset
@@ -288,3 +307,27 @@ class GeneratedContent(models.Model):
         
         # یک محدودیت برای جلوگیری از تولید محتوای تکراری برای یک کمپین و پلتفرم در یک زمان مشخص
         unique_together = ('campaign', 'platform', 'created_at')
+
+class Notification(models.Model):
+    """Model to track campaign notifications sent to users"""
+    campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='notifications')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='notifications')
+    notification_url = models.URLField(max_length=500, help_text="URL sent to user for posting")
+    sent_at = models.DateTimeField(auto_now_add=True)
+    is_read = models.BooleanField(default=False, help_text="Whether user has accessed the notification URL")
+    accessed_at = models.DateTimeField(null=True, blank=True)
+    email_sent = models.BooleanField(default=False)
+    email_sent_at = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        unique_together = ('campaign', 'user')
+        ordering = ['-sent_at']
+    
+    def __str__(self):
+        return f"Notification for {self.campaign.title} - {self.user.username}"
+    
+    def mark_as_read(self):
+        """Mark notification as read and set accessed time"""
+        self.is_read = True
+        self.accessed_at = timezone.now()
+        self.save()

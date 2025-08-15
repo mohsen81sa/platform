@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Platform, Tag, AssetLibrary, Asset, Campaign, CampaignPost, PostAsset, PostLog,User,CampaignSchedule
+from .models import Platform, Tag, AssetLibrary, Asset, Campaign, CampaignPost, PostAsset, PostLog,User,CampaignSchedule, Notification
 
 
 
@@ -72,9 +72,20 @@ class CampaignPostSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 class CampaignScheduleSerializer(serializers.ModelSerializer):
+    campaign_title = serializers.CharField(source='campaign.title', read_only=True)
+    campaign_id = serializers.IntegerField(source='campaign.id', read_only=True)
+
     class Meta:
         model = CampaignSchedule
-        fields = ['minute', 'hour', 'day_of_week', 'is_enabled']
+        fields = [
+            'id',
+            'campaign_id',
+            'campaign_title',
+            'last_run_at',
+            'next_run_at',
+            'is_enabled',
+        ]
+        read_only_fields = ['last_run_at', 'next_run_at']
 
 class CampaignSerializer(serializers.ModelSerializer):
     platform_title = serializers.CharField(source='platform.title', read_only=True)
@@ -84,10 +95,9 @@ class CampaignSerializer(serializers.ModelSerializer):
     class Meta:
         model = Campaign
         fields = [
-            'id', 'user', 'title', 'start_date', 'end_date', 'status',
+            'id', 'user', 'title', 'start_date', 'end_date', 'execution_period', 'status',
             'session_type', 'times_per_week', 'platform', 'platform_title',
-            'asset_library', 'asset_library_name', 'tags', 'prompt',
-            'is_active'
+            'asset_library', 'asset_library_name', 'tags', 'prompt', 'is_active'
         ]
         read_only_fields = ['user', 'status', 'platform_title', 'asset_library_name']
 
@@ -110,3 +120,13 @@ class PostLogSerializer(serializers.ModelSerializer):
         model = PostLog
         fields = "__all__"
         read_only_fields = ['post', 'status', 'error_message'] 
+
+class NotificationSerializer(serializers.ModelSerializer):
+    campaign_title = serializers.CharField(source='campaign.title', read_only=True)
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = "__all__"
+        read_only_fields = ['sent_at', 'email_sent', 'email_sent_at'] 

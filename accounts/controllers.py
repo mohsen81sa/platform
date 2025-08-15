@@ -10,10 +10,10 @@ from datetime import datetime, timedelta
 import requests
 import json
 
-from .models import User, Platform, Tag, AssetLibrary, Asset, Campaign, CampaignPost, PostAsset, PostLog
+from .models import User, Platform, Tag, AssetLibrary, Asset, Campaign, CampaignPost, PostAsset, PostLog,Notification
 from .serializers import (
     UserSerializer, PlatformSerializer, TagSerializer, AssetLibrarySerializer, AssetSerializer, 
-    CampaignSerializer, CampaignPostSerializer, PostAssetSerializer, PostLogSerializer
+    CampaignSerializer, CampaignPostSerializer, PostAssetSerializer, PostLogSerializer,NotificationSerializer
 )
 
 # Simple OpenRouter AI Provider
@@ -21,9 +21,10 @@ class OpenRouterAI:
     """Simple OpenRouter AI provider for content generation"""
     
     def __init__(self):
+        from django.conf import settings
         self.client = openai.OpenAI(
             base_url="https://openrouter.ai/api/v1",
-            api_key="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",
+            api_key=settings.OPENROUTER_API_KEY,
         )
     
     def generate_content(self, prompt: str, max_tokens: int = 300) -> str:
@@ -597,11 +598,11 @@ class LinkedInContentController:
     """Controller for LinkedIn content generation using OpenRouter"""
     
     def __init__(self):
-        self.asset_controller = AssetController()
-        self.campaign_controller = CampaignController()
-        self.post_controller = CampaignPostController()
-        self.log_controller = PostLogController()
         self.ai_provider = OpenRouterAI()
+        self.campaign_controller = CampaignController()
+        self.asset_controller = AssetController()
+        self.post_controller = CampaignPostController()
+        self.used_assets_in_session = set()  # Track assets used in current session
     
     def generate_linkedin_content(self, campaign_id: int, user_id: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -615,6 +616,7 @@ class LinkedInContentController:
             Dict containing the generated content and metadata
         """
         try:
+            from datetime import timedelta
             # Validate campaign exists and get campaign data
             campaign_data = self.campaign_controller.get_by_id(campaign_id)
             if not campaign_data:
@@ -627,9 +629,12 @@ class LinkedInContentController:
                 raise ValidationError("Campaign must have a prompt for content generation")
             
             # Get random unused asset from the campaign's asset library
-            asset = self._get_random_unused_asset(campaign.asset_library_id, user_id)
+            asset = self._get_random_unused_asset(campaign.asset_library_id, user_id, campaign_id, self.used_assets_in_session)
             if not asset:
                 raise ValidationError("No unused assets available for content generation")
+            
+            # Add asset to session tracking
+            self.used_assets_in_session.add(asset.id)
             
             # Generate content based on asset type
             generated_content = self._generate_content_for_asset(campaign, asset)
@@ -639,27 +644,28 @@ class LinkedInContentController:
                 'campaign_id': campaign_id,
                 'content': generated_content,
                 'publish_date': timezone.now() + timedelta(hours=1),  # Schedule for 1 hour from now
+                'status': 'PENDING'  # Set initial status to PENDING
             }
-            
-            post = self.post_controller.create(post_data)
-            
-            # Link the asset to the post
-            post_obj = CampaignPost.objects.get(id=post['id'])
-            PostAsset.objects.create(post=post_obj, asset=asset)
-            
-            # Mark asset as used by AI
-            self.asset_controller.mark_as_used_by_ai(asset.id)
-            
-            # Create success log
-            self.log_controller.create_log(
-                post_id=post['id'],
-                status='generated',
-                error_message=None
+            print(post_data)
+            publish_date = timezone.now() + timedelta(days=campaign.execution_period)
+            # Create the post in database
+            post = CampaignPost.objects.create(
+                campaign=campaign,
+                content=generated_content,
+                publish_date=publish_date,
+                status=CampaignPost.Status.PENDING
             )
+            print(f"Created post in database: {post}")
+            
+        
+            
+            # # Mark asset as used by AI
+            # self.asset_controller.mark_as_used_by_ai(asset.id)
+            
             
             return {
                 'success': True,
-                'post': post,
+                'post': post_data['content'],
                 'asset_used': {
                     'id': asset.id,
                     'name': asset.name,
@@ -682,13 +688,15 @@ class LinkedInContentController:
                 'error_type': 'unexpected_error'
             }
     
-    def _get_random_unused_asset(self, library_id: int, user_id: Optional[int] = None) -> Optional[Asset]:
+    def _get_random_unused_asset(self, library_id: int, user_id: Optional[int] = None, campaign_id: Optional[int] = None, excluded_asset_ids: Optional[set] = None) -> Optional[Asset]:
         """
         Get a random unused asset from the specified library
         
         Args:
             library_id: ID of the asset library
             user_id: Optional user ID for additional filtering
+            campaign_id: Optional campaign ID to exclude assets already used in this campaign
+            excluded_asset_ids: Set of asset IDs to exclude from selection
             
         Returns:
             Random unused Asset object or None if none available
@@ -705,6 +713,20 @@ class LinkedInContentController:
                 filters['library__user_id'] = user_id
             
             unused_assets = Asset.objects.filter(**filters)
+            
+            # If campaign_id is provided, exclude assets already used in this campaign
+            if campaign_id:
+                # Get assets already used in this campaign
+                used_asset_ids = PostAsset.objects.filter(
+                    post__campaign_id=campaign_id
+                ).values_list('asset_id', flat=True)
+                
+                # Exclude already used assets
+                unused_assets = unused_assets.exclude(id__in=used_asset_ids)
+            
+            # If excluded_asset_ids is provided, exclude those assets too
+            if excluded_asset_ids:
+                unused_assets = unused_assets.exclude(id__in=excluded_asset_ids)
             
             if not unused_assets.exists():
                 return None
@@ -735,7 +757,7 @@ class LinkedInContentController:
             
             # Generate content using configured AI provider
             generated_content = self.ai_provider.generate_content(asset_prompt)
-            
+        
             if not generated_content:
                 raise ValidationError(f"{self.ai_provider.provider_name} returned empty content")
             
@@ -756,15 +778,28 @@ class LinkedInContentController:
             Enhanced prompt string
         """
         asset_description = f"Asset: {asset.name} (Type: {asset.file_type})"
-        
+        from django.http import HttpRequest  
+        from django.conf import settings      
+        def get_image_url(request: HttpRequest, asset_file: str):
+            return request.build_absolute_uri(settings.MEDIA_URL + asset_file)
         # Process image if it's an image file and has a URL
         image_analysis = ""
-        if asset.file_type == 'image' and asset.file:
+        print(asset.file_type)
+        print(asset.file)
+        if asset.file_type == 'image':
             try:
+            
                 # Get the image URL (you might need to adjust this based on your file storage)
-                image_url = asset.file.url if hasattr(asset.file, 'url') else str(asset.file)
+            
+                image_url = "https://i.imgur.com/Z75PBgv.jpeg"
+                #image_url = self.request.build_absolute_uri(asset.file.url)
+                #image_url = asset.file.url if hasattr(asset.file, 'url') else str(asset.file)
+            
+                
                 image_analysis_result = self.ai_provider.analyze_image(image_url)
+                
                 image_analysis = f"\n\nImage Analysis: {image_analysis_result}"
+            
             except Exception as e:
                 # If image processing fails, continue without it
                 image_analysis = f"\n\nNote: Could not analyze image ({str(e)})"
@@ -809,8 +844,12 @@ Instructions:
 - Include relevant hashtags
 - Keep it under 300 characters for optimal LinkedIn engagement
 """
-        
+
         return prompt.strip()
+    
+    def reset_session_tracking(self):
+        """Reset the session asset tracking"""
+        self.used_assets_in_session.clear()
     
     def generate_multiple_posts(self, campaign_id: int, count: int = 3, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """
@@ -824,6 +863,9 @@ Instructions:
         Returns:
             List of generated post results
         """
+        # Reset session tracking for new batch
+        self.reset_session_tracking()
+        
         results = []
         
         for i in range(count):
@@ -973,5 +1015,103 @@ Instructions:
             ]
         }
 
+
+class NotificationController(BaseController):
+    """Controller for Notification model operations"""
+    
+    def __init__(self):
+        super().__init__(Notification, NotificationSerializer)
+    
+    def get_by_user(self, user_id: int) -> List[Dict[str, Any]]:
+        """Get all notifications for a specific user"""
+        return self.get_all(user_id=user_id)
+    
+    def get_by_campaign(self, campaign_id: int) -> List[Dict[str, Any]]:
+        """Get all notifications for a specific campaign"""
+        return self.get_all(campaign_id=campaign_id)
+    
+    def get_unread_notifications(self, user_id: int) -> List[Dict[str, Any]]:
+        """Get unread notifications for a user"""
+        queryset = Notification.objects.filter(user_id=user_id, is_read=False)
+        serializer = self.serializer(queryset, many=True)
+        return serializer.data
+    
+    def mark_as_read(self, notification_id: int) -> Optional[Dict[str, Any]]:
+        """Mark a notification as read"""
+        try:
+            notification = Notification.objects.get(id=notification_id)
+            notification.mark_as_read()
+            serializer = self.serializer(notification)
+            return serializer.data
+        except ObjectDoesNotExist:
+            return None
+    
+    def create_campaign_notification(self, campaign_id: int, user_id: int, base_url: str) -> Dict[str, Any]:
+        """Create a notification for a campaign with a unique URL"""
+        try:
+            # Check if notification already exists
+            existing_notification = Notification.objects.filter(
+                campaign_id=campaign_id, 
+                user_id=user_id
+            ).first()
+            
+            if existing_notification:
+                # Update existing notification
+                notification_url = f"{base_url}/campaign/{campaign_id}/posts"
+                existing_notification.notification_url = notification_url
+                existing_notification.save()
+                serializer = self.serializer(existing_notification)
+                return serializer.data
+            
+            # Create new notification
+            notification_url = f"{base_url}/campaign/{campaign_id}/posts"
+            notification_data = {
+                'campaign_id': campaign_id,
+                'user_id': user_id,
+                'notification_url': notification_url
+            }
+            
+            return self.create(notification_data)
+            
+        except Exception as e:
+            raise ValidationError(f"Error creating notification: {str(e)}")
+    
+    def send_email_notification(self, notification_id: int, email_service_url: str = None) -> bool:
+        """Send email notification to user"""
+        try:
+            notification = Notification.objects.get(id=notification_id)
+            
+            # Update notification as sent
+            notification.email_sent = True
+            notification.email_sent_at = timezone.now()
+            notification.save()
+            
+            # Here you would integrate with your email service
+            # For now, we'll just mark it as sent
+            # In production, you'd use services like SendGrid, Mailgun, etc.
+            
+            return True
+            
+        except ObjectDoesNotExist:
+            return False
+        except Exception as e:
+            raise ValidationError(f"Error sending email notification: {str(e)}")
+    
+    def get_notification_stats(self, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """Get notification statistics"""
+        queryset = Notification.objects.all()
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        
+        total_notifications = queryset.count()
+        unread_notifications = queryset.filter(is_read=False).count()
+        email_sent_count = queryset.filter(email_sent=True).count()
+        
+        return {
+            'total_notifications': total_notifications,
+            'unread_notifications': unread_notifications,
+            'email_sent_count': email_sent_count,
+            'read_percentage': (total_notifications - unread_notifications) / total_notifications * 100 if total_notifications > 0 else 0
+        }
 
  
